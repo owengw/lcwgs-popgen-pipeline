@@ -19,6 +19,7 @@ plot_inbreeding.R          F_HET inbreeding coefficients (local R)
 plot_hwe.R                 HWE significance and per-site F (local R)
 plot_roh.R                 ROHan ROH and theta visualisation (local R)
 het_calcs.R                Heterozygosity calculations and FST/PCA summary (local R)
+hetfit.R                   Heterozygosity-fitness regression — SMI, HFC, site effects (local R)
 pop_gen_analysis.R         Population statistics summary table (local R)
 plot_lcmlkin_relatedness.R lcMLkin relatedness network plots (local R)
 IBD.R                      Isolation by distance — Mantel and partial Mantel tests (local R)
@@ -621,6 +622,41 @@ Plots individual and population-level ROH metrics from ROHan output: ROHan theta
 **Inputs:** `roh/population/individual_ROH_all.tsv`, `roh/population/population_ROH_summary.tsv`
 
 **R packages:** `dplyr`, `ggplot2`, `patchwork`
+
+---
+
+### hetfit.R — Heterozygosity-fitness regression
+
+Tests for heterozygosity-fitness correlations (HFC) using scaled mass index (SMI; Peig & Green 2009) as a fitness proxy. Runs three modelling approaches and compares results to assess robustness:
+
+**Approach 1 — Robust OLS on SMI (HC1 standard errors):** Uses the pre-calculated SMI directly from `body_stats.csv`. HC1 heteroskedasticity-consistent standard errors are used rather than HC3 because singleton sites (n=1 per site) create hat values of 1 that make HC3 undefined.
+
+**Approach 2 — OLS on log(SMI):** Log transformation to address mild residual non-normality. Coefficients interpreted as proportional change in SMI per unit heterozygosity.
+
+**Approach 3 — Beta regression on bounded SMI:** SMI scaled to (0,1) using Smithson & Verkuilen (2006) compression and modelled with Beta regression, which is statistically appropriate for bounded continuous responses. Interaction model not fitted (overparameterised given small n at some sites).
+
+Model selection follows a likelihood ratio / Wald test sequence: het×site interaction → additive (het + site) → het only → null. Singleton sites (n=1, e.g. Daniel's Head) are excluded from site models to avoid perfect collinearity but retained in het-only and null models.
+
+**Before running**, update `base_dir`, `het_dir`, and `fit_dir` at the top of the script. The script requires:
+- `.het` files from `p07a_individual_het.sh` in the heterozygosity directory
+- `body_stats.csv` with columns: `ID`, `weight`, `svl`, `smi`, `site` — `ID` must match the short form (e.g. `CAI14`) extracted from BAM filenames; `smi` should be pre-calculated using the Peig & Green formula
+
+Non-numeric weight values are identified and reported before coercion. Individuals with missing SMI are excluded.
+
+**R packages required:**
+
+```r
+install.packages(c("dplyr", "tidyr", "ggplot2", "patchwork",
+                   "sandwich", "lmtest", "betareg"))
+```
+
+**Outputs** (saved to `hetfit/results/`):
+- `hetfit_model_comparison.tsv` — het p-value, site p-value and interaction p-value across all three approaches
+- `hetfit_merged_data.tsv` — merged heterozygosity + body stats dataset
+- `hetfit_combined.pdf/.png` — combined panel: het distribution, SMI scatter, QQ plots
+- `hetfit_het_dist.pdf`, `hetfit_smi_site.pdf`, `hetfit_logsmi.pdf`, `hetfit_beta.pdf`, `hetfit_qq.pdf` — individual figures
+
+> **Interpretation note:** If heterozygosity is significant in the het-only model but not after controlling for site, this suggests between-site covariation of heterozygosity and condition rather than a direct within-individual HFC. The log(SMI) and Beta regression models are preferred over raw SMI OLS for inference as they are more robust to the mild non-normality observed in this dataset.
 
 ---
 

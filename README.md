@@ -11,18 +11,19 @@ Originally developed for *Plestiodon longirostris* (Bermuda skink), but applicab
 The pipeline is divided into numbered stages, each represented by a script. Scripts within the same stage can typically be run in parallel. Scripts in later stages depend on outputs from earlier stages.
 
 ```
-p01                        Read QC and trimming
-p02                        Genome indexing
-p03                        Alignment
-p04                        BAM merging, deduplication, overlap clipping
-p05                        Depth assessment
-p_sex                      Sex identification (optional)
-p06                        GL generation, LD pruning, PCA, admixture, theta, FST
-p07                        Individual heterozygosity, population theta, inbreeding, SFS
-p08                        ROH, HWE, LD decay
-p09                        lcMLkin relatedness (GL-aware, HWE-free)
-plot_lcmlkin_relatedness.R Relatedness network plots and summary tables (local R)
-Diff.R                     Selection analysis — Tajima's D and FST outliers, gene annotation, GO enrichment (local R)
+p01-p09 scripts            Cluster pipeline (SLURM)
+pca_angsd.R                PCA from ANGSD covariance matrix (local R)
+plot_admixture.R           NGSadmix admixture structure plots (local R)
+plot_diversity.R           Heterozygosity, pi, theta, Tajima's D (local R)
+plot_inbreeding.R          F_HET inbreeding coefficients (local R)
+plot_hwe.R                 HWE significance and per-site F (local R)
+plot_roh.R                 ROHan ROH and theta visualisation (local R)
+het_calcs.R                Heterozygosity calculations and FST/PCA summary (local R)
+pop_gen_analysis.R         Population statistics summary table (local R)
+plot_lcmlkin_relatedness.R lcMLkin relatedness network plots (local R)
+IBD.R                      Isolation by distance — Mantel and partial Mantel tests (local R)
+ne_plot.R                  GONE contemporary Ne over time (local R)
+Diff.R                     Selection — Tajima's D/FST outliers, gene annotation, GO enrichment (local R)
 ```
 
 ---
@@ -547,7 +548,103 @@ Replace these with your own failed/duplicate sample identifiers.
 
 ---
 
-### plot_lcmlkin_relatedness.R — Relatedness visualisation
+---
+
+## Local R scripts
+
+All R scripts are run locally in RStudio after downloading results from the cluster. Update file paths at the top of each script before running. All scripts follow the same colour scheme:
+
+```r
+pop_colours <- c(CAI = "#E69F00", NS = "#56B4E9", SB = "#009E73", SI = "#F0E442")
+```
+
+---
+
+### pca_angsd.R — PCA
+
+Plots PCA from the ANGSD covariance matrix (`pop_map_ALL.covMat`) produced by `p06c2_pca.sh`. NaN values in the covariance matrix are replaced with 0 (standard for ANGSD output). Produces PC1 vs PC2, PC1 vs PC3, PC2 vs PC3, and a scree plot, plus a duplicate-labelled version to identify any outlier individuals. All outputs as PDF and SVG.
+
+**Inputs:** `pop_map_ALL.covMat`, `metadata.tsv`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `ggrepel`, `patchwork`
+
+---
+
+### plot_admixture.R — NGSadmix admixture
+
+Plots ancestry proportion structure bars from NGSadmix output for K=1–10. Uses the Hungarian algorithm (`clue` package) for CLUMPP-style component colour alignment across K values so the same ancestry component retains the same colour across panels. Includes a log-likelihood K selection plot with SD ribbon across replicates. All 198 individual labels shown rotated on x-axis. Outputs as PDF and SVG.
+
+**Inputs:** `ngsadmix/K*/ngsadmix_K*_rep*.qopt`, `ngsadmix/loglikelihoods.txt`, `metadata.tsv`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `patchwork`, `stringr`, `clue`
+
+```r
+install.packages("clue")
+```
+
+---
+
+### plot_diversity.R — Diversity metrics
+
+Produces four panels: individual heterozygosity by population (violin + boxplot), population-level π and θw (bar chart), Tajima's D at full n, and Tajima's D at downsampled n=17 for equal-sample comparison. Excludes SI43, SI45 (failed), o-suffix and T-suffix duplicates, and DH (n=1). Outputs as PDF and SVG.
+
+**Inputs:** `heterozygosity_corrected/*.het`, `theta_corrected/theta_summary_corrected.tsv`, `theta_downsampled/theta_downsampled_summary.tsv`, `metadata.tsv`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `patchwork`
+
+---
+
+### plot_inbreeding.R — Inbreeding coefficients
+
+Plots individual F_HET values (1 − H_obs/H_exp) per population as violin + boxplot + jitter, and population mean F_HET with SD as a bar chart. Excludes COI, SP, DH (small n), failed samples, and duplicates. Outputs as PDF and SVG.
+
+**Inputs:** `inbreeding_corrected/F_HET_individual_corrected.txt`, `metadata.tsv`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `ggrepel`, `patchwork`
+
+---
+
+### plot_hwe.R — Hardy-Weinberg equilibrium
+
+Plots the percentage of sites significantly deviating from HWE per population at three thresholds (p < 0.05, p < 0.001, Bonferroni), and the per-site inbreeding coefficient F distribution as violin + boxplot. Includes a supplementary LD decay figure with assembly fragmentation caveat. Outputs as PDF and SVG.
+
+**Inputs:** `hwe/pop_map_<POP>_hwe_results.tsv.gz`, `hwe/hwe_summary_all_populations.tsv`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `patchwork`
+
+---
+
+### plot_roh.R — Runs of homozygosity
+
+Plots individual and population-level ROH metrics from ROHan output: ROHan theta (heterozygosity outside ROH), percentage of genome in ROH, and average ROH length. Includes the assembly fragmentation caveat — ROH spanning contig boundaries are undetectable, so F_ROH values are conservative underestimates and most individuals showing zero ROH likely have genuine ROH split across contigs.
+
+**Inputs:** `roh/population/individual_ROH_all.tsv`, `roh/population/population_ROH_summary.tsv`
+
+**R packages:** `dplyr`, `ggplot2`, `patchwork`
+
+---
+
+### het_calcs.R — Heterozygosity calculations
+
+Calculates and plots per-individual heterozygosity from the corrected `.het` files, with FST and PCA summaries. Useful as a cross-check against `plot_diversity.R`.
+
+**Inputs:** `heterozygosity_corrected/*.het`, `fst/`, `PCA/`, `metadata.tsv`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `patchwork`
+
+---
+
+### pop_gen_analysis.R — Population statistics summary table
+
+Compiles a publication-ready summary table of all key population genetic statistics: observed heterozygosity (Ho), nucleotide diversity (π), Watterson's theta (θw), Tajima's D, pairwise weighted FST, allelic richness (rarefied from SFS), private alleles, and F_HET. Outputs as formatted table.
+
+**Inputs:** `heterozygosity_corrected/`, `theta_corrected/theta_summary_corrected.tsv`, `fst/`, `sfs/`, `inbreeding_corrected/F_HET_individual_corrected.txt`
+
+**R packages:** `dplyr`, `tidyr`, `readr`, `ggplot2`, `knitr`, `kableExtra`, `patchwork`
+
+---
+
+### plot_lcmlkin_relatedness.R — Relatedness network plots
 
 Run locally in RStudio after downloading `lcmlkin_all_populations.tsv` from the cluster. Requires no cluster access — pure R.
 
@@ -623,6 +720,36 @@ BiocManager::install(c("rtracklayer", "GenomicRanges", "GO.db", "clusterProfiler
 ---
 
 
+
+---
+
+### IBD.R — Isolation by distance
+
+Tests for isolation by distance (IBD) at both population and individual levels using Mantel and partial Mantel tests. Population-level IBD uses weighted FST/(1−FST) from `fst_summary.tsv`. Individual-level IBD uses 1 − IBS from the ANGSD IBS matrix. Geographic distances are calculated from UTM coordinates using great-circle distances.
+
+**Important caveat:** Within-population IBD analysis via Mantel test was not interpretable for this dataset. Sampling locations within populations were too geographically compressed (50–260 m range) relative to the resolution of the IBS matrix, kin clustering created structural non-independence in the distance matrix, and structural zeros made the Mantel test assumption of random spatial sampling invalid. The population-level Mantel test (n=4 populations) had insufficient power. The partial Mantel test (controlling for population identity) returned a significant result (r=0.456, p=0.0001) and is the most defensible result from this analysis. These limitations should be noted when reporting IBD results.
+
+**Inputs:** `angsd_results/fst_summary.tsv`, `angsd_results/pop_map_ALL.ibsMat`, `metadata.tsv` (with UTM coordinates)
+
+**R packages:** `tidyverse`, `vegan`, `geosphere`
+
+```r
+install.packages(c("vegan", "geosphere"))
+```
+
+---
+
+### ne_plot.R — Contemporary effective population size (GONE)
+
+Plots contemporary Ne estimates over approximately 200 generations from GONE (Santiago et al. 2020), which uses LD decay to infer Ne trajectories. Generation time is set to 3 years for *P. longirostris*. CAI (n=22) and SB (n=17) are excluded from main figures as their small sample sizes produced biologically implausible Ne estimates (~12,000 and ~18,000 respectively, far exceeding census size estimates from mark-recapture surveys). COI (n=3) was not run. These populations are retained in supplementary output.
+
+> **Note:** GONE is not part of the SLURM pipeline scripts in this repository. It requires a separate installation and is run independently on LD output files. See the [GONE GitHub](https://github.com/esrud/GONE) for installation instructions.
+
+**Inputs:** GONE output files (`Output_Ne_<POP>`)
+
+**R packages:** `tidyverse`, `patchwork`
+
+---
 
 ## Known limitations
 

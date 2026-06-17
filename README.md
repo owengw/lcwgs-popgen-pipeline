@@ -11,16 +11,17 @@ Originally developed for *Plestiodon longirostris* (Bermuda skink), but applicab
 The pipeline is divided into numbered stages, each represented by a script. Scripts within the same stage can typically be run in parallel. Scripts in later stages depend on outputs from earlier stages.
 
 ```
-p01  Read QC and trimming
-p02  Genome indexing
-p03  Alignment
-p04  BAM merging, deduplication, overlap clipping
-p05  Depth assessment
+p01    Read QC and trimming
+p02    Genome indexing
+p03    Alignment
+p04    BAM merging, deduplication, overlap clipping
+p05    Depth assessment
 p_sex  Sex identification (optional)
-p06  GL generation, LD pruning, PCA, admixture, theta, FST
-p07  Individual heterozygosity, population theta, inbreeding, SFS
-p08  ROH, HWE, LD decay
-p09  lcMLkin relatedness (GL-aware, HWE-free)
+p06    GL generation, LD pruning, PCA, admixture, theta, FST
+p07    Individual heterozygosity, population theta, inbreeding, SFS
+p08    ROH, HWE, LD decay
+p09    lcMLkin relatedness (GL-aware, HWE-free)
+Diff.R Selection analysis — Tajima's D and FST outliers, gene annotation, GO enrichment
 ```
 
 ---
@@ -534,10 +535,59 @@ Replace these with your own failed/duplicate sample identifiers.
 | `angsd_results/roh/population/individual_ROH_all.tsv` | ROHan individual results |
 | `angsd_results/ld_decay/ld_decay_all_populations.tsv` | LD decay by distance class |
 | `angsd_results/lcmlkin/lcmlkin_all_populations.tsv` | lcMLkin pairwise relatedness |
+| `results/selection difference/plestiodon_TajimaD_manhattan.pdf` | Tajima's D Manhattan plot |
+| `results/selection difference/plestiodon_FST_upset.pdf` | FST outlier gene UpSet plot |
+| `results/selection difference/plestiodon_FST_manhattan_pairs.pdf` | Per-pair FST Manhattan plots |
+| `results/selection difference/plestiodon_FST_outlier_gene_products.csv` | FST outlier genes with product names |
+| `results/selection difference/plestiodon_TajimaD_outlier_gene_products.csv` | Tajima's D outlier genes with product names |
 
 ---
 
-## Known limitations
+### Diff.R — Selection analysis
+
+Run locally in RStudio after downloading results from the cluster. Requires:
+- `pop_map_ALL.thetas.windowed.pestPG` — genome-wide windowed Tajima's D (from p07b with `POP_SINGLE=ALL`)
+- `fst_*.fst.windowed.tsv` files — per-pair windowed FST (from p06e)
+- `ragtag.scaffold.agp` — AGP scaffolding file mapping contigs to chromosomes (from RagTag)
+- A GFF3 annotation file for your species
+
+**Before running**, update the file paths at the top of the script under `# --- 2. FILE PATHS ---` to point to your local copies of these files.
+
+The script performs five analyses in sequence:
+
+**1. Tajima's D outlier detection** — identifies windows in the top and bottom 1% of the genome-wide Tajima's D distribution as candidates for balancing and positive selection respectively. Windows are translated from contig coordinates to chromosome coordinates via the AGP file.
+
+**2. FST outlier detection** — identifies windows in the top 1% of FST per population pair as candidates for divergent selection. Runs across all pairwise comparisons simultaneously.
+
+**3. Gene annotation overlap** — uses GenomicRanges to find annotated genes overlapping outlier windows (±25 kb), extracts gene product names from the GFF3, and identifies genes flagged in multiple population comparisons.
+
+**4. GO enrichment** — tests for enrichment of Gene Ontology terms among outlier gene sets using clusterProfiler. Requires GO annotations in the GFF3 (Dbxref field).
+
+**5. Visualisation** — produces three figures:
+- Tajima's D Manhattan plot across all chromosomes, with outlier windows highlighted
+- FST UpSet plot showing overlap of divergent genes across all population pairs
+- Per-pair FST Manhattan plots (one panel per comparison, combined with patchwork)
+
+**R packages required:**
+
+```r
+install.packages(c("ggplot2", "dplyr", "ggrepel", "data.table",
+                   "tidyr", "stringr", "conflicted", "patchwork", "UpSetR"))
+BiocManager::install(c("rtracklayer", "GenomicRanges", "GO.db", "clusterProfiler"))
+```
+
+**Outputs** (saved to the path set in `OUT_DIR`):
+- `plestiodon_TajimaD_manhattan.pdf/.png`
+- `plestiodon_FST_upset.pdf/.png`
+- `plestiodon_FST_manhattan_pairs.pdf/.png`
+- `plestiodon_FST_outlier_gene_products.csv`
+- `plestiodon_TajimaD_outlier_gene_products.csv`
+
+> **Note:** The script uses chromosome-level coordinates from RagTag scaffolding for Manhattan plots. If your assembly is not scaffolded to chromosome level, plots will show per-contig results instead — remove the AGP translation step (sections 4–5) and plot directly from contig coordinates.
+
+---
+
+
 
 - **Fragmented assembly:** ROH detection, LD decay, and within-population IBD analysis are unreliable when assembly N50 is much shorter than the expected ROH length or LD window. Report with caveats or exclude from main results.
 - **Bonferroni HWE:** Conservative with few tested sites per population. Report uncorrected proportion significant alongside Bonferroni results.
@@ -561,7 +611,8 @@ If you use this pipeline, please cite the underlying tools:
 - **HardyWeinberg R package:** Graffelman & Morales-Camarena (2008) Human Heredity
 - **Trimmomatic:** Bolger et al. (2014) Bioinformatics
 - **bowtie2:** Langmead & Salzberg (2012) Nature Methods
-- **Picard:** Broad Institute (https://broadinstitute.github.io/picard/)
+- **clusterProfiler:** Wu et al. (2021) The Innovation
+- **ggplot2:** Wickham (2016) Springer
 
 ---
 

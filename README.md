@@ -11,17 +11,18 @@ Originally developed for *Plestiodon longirostris* (Bermuda skink), but applicab
 The pipeline is divided into numbered stages, each represented by a script. Scripts within the same stage can typically be run in parallel. Scripts in later stages depend on outputs from earlier stages.
 
 ```
-p01    Read QC and trimming
-p02    Genome indexing
-p03    Alignment
-p04    BAM merging, deduplication, overlap clipping
-p05    Depth assessment
-p_sex  Sex identification (optional)
-p06    GL generation, LD pruning, PCA, admixture, theta, FST
-p07    Individual heterozygosity, population theta, inbreeding, SFS
-p08    ROH, HWE, LD decay
-p09    lcMLkin relatedness (GL-aware, HWE-free)
-Diff.R Selection analysis — Tajima's D and FST outliers, gene annotation, GO enrichment
+p01                        Read QC and trimming
+p02                        Genome indexing
+p03                        Alignment
+p04                        BAM merging, deduplication, overlap clipping
+p05                        Depth assessment
+p_sex                      Sex identification (optional)
+p06                        GL generation, LD pruning, PCA, admixture, theta, FST
+p07                        Individual heterozygosity, population theta, inbreeding, SFS
+p08                        ROH, HWE, LD decay
+p09                        lcMLkin relatedness (GL-aware, HWE-free)
+plot_lcmlkin_relatedness.R Relatedness network plots and summary tables (local R)
+Diff.R                     Selection analysis — Tajima's D and FST outliers, gene annotation, GO enrichment (local R)
 ```
 
 ---
@@ -36,7 +37,7 @@ Diff.R Selection analysis — Tajima's D and FST outliers, gene annotation, GO e
 | ngsLD | 1.2.1 | Use `/users/bi4og/ngsLD/ngsLD`, not conda version |
 | PCAngsd | — | Via conda |
 | NGSadmix | — | Via conda |
-| ngsRelate | v2 | Via conda |
+
 | ROHan | — | Compiled binary required |
 | lcMLkin | v2.1 | Python script, cloned from GitHub |
 | realSFS / thetaStat | (ANGSD suite) | |
@@ -529,17 +530,51 @@ Replace these with your own failed/duplicate sample identifiers.
 | `angsd_results/fst_summary.tsv` | Pairwise weighted FST |
 | `angsd_results/heterozygosity_corrected/*.het` | Individual heterozygosity |
 | `angsd_results/inbreeding_corrected/F_HET_individual_corrected.txt` | Per-individual F_HET |
-| `angsd_results/relatedness/relate_pop_map_<POP>_full.txt` | ngsRelate pairwise KING etc. |
 | `angsd_results/hwe/hwe_summary_all_populations.tsv` | HWE summary per population |
 | `angsd_results/roh/population/population_ROH_summary.tsv` | ROHan population summary |
 | `angsd_results/roh/population/individual_ROH_all.tsv` | ROHan individual results |
 | `angsd_results/ld_decay/ld_decay_all_populations.tsv` | LD decay by distance class |
-| `angsd_results/lcmlkin/lcmlkin_all_populations.tsv` | lcMLkin pairwise relatedness |
+| `angsd_results/lcmlkin/lcmlkin_all_populations.tsv` | lcMLkin pairwise relatedness (all populations) |
+| `results/relatedness_lcmlkin/lcmlkin_relationship_summary.tsv` | Relationship class counts per population |
+| `results/relatedness_lcmlkin/lcmlkin_close_pairs.tsv` | All non-unrelated pairs with K0/K1/K2/r |
+| `results/relatedness_lcmlkin/lcmlkin_network_<POP>.pdf` | Per-population relatedness network |
+| `results/relatedness_lcmlkin/lcmlkin_network_combined.pdf` | Combined four-population network panel |
 | `results/selection difference/plestiodon_TajimaD_manhattan.pdf` | Tajima's D Manhattan plot |
 | `results/selection difference/plestiodon_FST_upset.pdf` | FST outlier gene UpSet plot |
 | `results/selection difference/plestiodon_FST_manhattan_pairs.pdf` | Per-pair FST Manhattan plots |
 | `results/selection difference/plestiodon_FST_outlier_gene_products.csv` | FST outlier genes with product names |
 | `results/selection difference/plestiodon_TajimaD_outlier_gene_products.csv` | Tajima's D outlier genes with product names |
+
+---
+
+### plot_lcmlkin_relatedness.R — Relatedness visualisation
+
+Run locally in RStudio after downloading `lcmlkin_all_populations.tsv` from the cluster. Requires no cluster access — pure R.
+
+**Before running**, update `base_dir` and `lcmlkin_dir` at the top of the script to point to your local copy of the lcMLkin results.
+
+The script produces:
+
+- A summary table of relationship class counts per population (Duplicate, 1st degree, Full sibling, 2nd degree, 3rd degree)
+- A bar chart of close pair counts per population
+- Per-population kinship network plots — nodes are individuals, edges are pairs with r ≥ 0.125 (3rd degree or closer), edge colour encodes relationship class, edge width encodes r
+- A combined four-population network panel
+
+**Why lcMLkin over ngsRelate KING for this pipeline:** KING assumes Hardy-Weinberg equilibrium and underestimates relatedness in inbred populations. lcMLkin uses a likelihood framework that directly models inbreeding, making it more appropriate for small isolated populations with elevated F values, even at low coverage.
+
+**R packages required:**
+
+```r
+install.packages(c("dplyr", "tidyr", "ggplot2", "igraph",
+                   "stringr", "patchwork", "scales"))
+```
+
+**Outputs** (saved to `results/relatedness_lcmlkin/`):
+- `lcmlkin_relationship_summary.tsv` — relationship class counts per population
+- `lcmlkin_close_pairs.tsv` — all non-unrelated pairs with K0, K1, K2, r
+- `lcmlkin_network_<POP>.pdf/.png` — per-population network
+- `lcmlkin_network_combined.pdf` — all populations combined
+- `lcmlkin_relationship_counts.pdf/.png` — bar chart summary
 
 ---
 
@@ -589,10 +624,12 @@ BiocManager::install(c("rtracklayer", "GenomicRanges", "GO.db", "clusterProfiler
 
 
 
+## Known limitations
+
 - **Fragmented assembly:** ROH detection, LD decay, and within-population IBD analysis are unreliable when assembly N50 is much shorter than the expected ROH length or LD window. Report with caveats or exclude from main results.
 - **Bonferroni HWE:** Conservative with few tested sites per population. Report uncorrected proportion significant alongside Bonferroni results.
-- **KING bias in inbred populations:** KING coefficients from ngsRelate assume HWE. Use lcMLkin results for populations with significant HWE deviation. Both are reported for cross-validation.
-- **lcMLkin SNP requirement:** Fewer than ~10,000 SNPs per population pair after LD pruning will produce unreliable K0/K1/K2 estimates (r = 0 for all pairs). Ensure sufficient SNP density before interpreting results.
+- **KING bias in inbred populations:** KING-based relatedness estimators assume Hardy-Weinberg equilibrium and are biased downward in inbred populations. lcMLkin is preferred for small isolated populations with significant HWE deviation as it uses a likelihood approach that directly accounts for inbreeding.
+- **lcMLkin SNP requirement:** Fewer than ~10,000 SNPs per population pair will produce unreliable K0/K1/K2 estimates. Ensure the per-population ANGSD VCF has sufficient SNP density (typically 5–8 million SNPs before filtering, yielding ~45,000–55,000 after MAF filtering and subsampling).
 - **realSFS stdout corruption:** Never pipe realSFS through `tee` — log messages are written to stdout and corrupt the `.sfs` file. Always redirect stderr separately (`2> file.log`).
 
 ---
@@ -605,7 +642,7 @@ If you use this pipeline, please cite the underlying tools:
 - **ngsLD:** Fox et al. (2019) Bioinformatics
 - **PCAngsd:** Meisner & Albrechtsen (2018) Genetics
 - **NGSadmix:** Skotte et al. (2013) Genetics
-- **ngsRelate:** Hanghøj et al. (2019) GigaScience
+- **ngsRelate:** Hanghøj et al. (2019) GigaScience — retained in pipeline for cross-validation but lcMLkin preferred as primary relatedness estimator for inbred populations
 - **ROHan:** Renaud et al. (2019) PLOS Genetics
 - **lcMLkin:** Lipatov et al. (2015) Bioinformatics; Žegarac et al. (2021) Bioinformatics
 - **HardyWeinberg R package:** Graffelman & Morales-Camarena (2008) Human Heredity

@@ -1,94 +1,97 @@
 #!/bin/bash
 #SBATCH --job-name=ind_het
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
-#SBATCH --time=04:00:00
-#SBATCH --array=1-198
+#SBATCH --time=08:00:00
+#SBATCH --array=1-166%40
 #SBATCH --output=logs/p07a_ind_het_%A_%a.log
 
+# =============================================================================
+# p07a_individual_het.sh — RagTag rewrite, ALL SITES (no random-10M subsample).
+# Per-individual 1-sample folded SFS heterozygosity. One array task per
+# individual (180, not 198/183). No EXCLUDE regex — reads directly from the
+# final 180-sample bam_list_dedup_overlapclipped.list, so every excluded/
+# replicate sample from the session's QC is already correctly absent.
+#
+# Memory note: a single-sample genome-wide SAF is far lighter than the
+# population-level ones that needed per-chromosome splitting (n=1 vs n=16-85),
+# so one job per individual, restricted to the 13 placed chromosomes via
+# -rf, is safe at 16G.
+# =============================================================================
+
+_SAVED_ARGS=("$@")
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
+set -- "${_SAVED_ARGS[@]}"
+set -eu
 
-set -euo pipefail
-set -x
-
-# ============================================================
-# Variables — edit these if needed
-# ============================================================
-OUT_DIR=${OUT_DIR:-physalia/angsd_results}
-BAM_LIST=${BAM_LIST:-physalia/angsd_results/all_samples.list}
-REFERENCE="genome/Plong_genome_flye.fasta"
-SITES_FILE="$OUT_DIR/random_10M_sites.list"
-RF_FILE="$OUT_DIR/random_10M_contigs.txt"
+OUT_DIR="physalia/angsd_results"
+REFERENCE="/mnt/parscratch/users/bi4og/ncbi_submission/plongirostris.fasta"
+CHROM_FILE="$OUT_DIR/chromosomes.txt"
+BAM_LIST="physalia/sample_lists/bam_list_dedup_overlapclipped.list"
 HET_DIR="$OUT_DIR/heterozygosity_corrected"
-THREADS=4
+THREADS=${SLURM_CPUS_PER_TASK:-2}
 
-mkdir -p "$HET_DIR"
+mkdir -p "$HET_DIR" logs
 
-# ============================================================
-# Get BAM file for this array task
-# ============================================================
-BAM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$BAM_LIST")
-
-if [[ -z "$BAM" ]]; then
-    echo "ERROR: No BAM found for array task $SLURM_ARRAY_TASK_ID"
-    exit 1
+TOTAL=$(wc -l < "$BAM_LIST")
+if [[ ${SLURM_ARRAY_TASK_ID} -gt $TOTAL ]]; then
+    echo "Array task ${SLURM_ARRAY_TASK_ID} > $TOTAL samples — exiting"
+    exit 0
 fi
 
-# Extract sample ID from BAM path
+BAM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$BAM_LIST")
+[[ -n "$BAM" ]] || { echo "ERROR: no BAM on line $SLURM_ARRAY_TASK_ID"; exit 1; }
 SAMPLE_ID=$(basename "$BAM" | sed 's/_merged.*//')
-echo "Processing: $SAMPLE_ID (task $SLURM_ARRAY_TASK_ID)"
+echo "Processing: $SAMPLE_ID (task $SLURM_ARRAY_TASK_ID / $TOTAL)"
 
 SAF_PREFIX="$HET_DIR/${SAMPLE_ID}"
 SFS_FILE="${SAF_PREFIX}.sfs"
 HET_FILE="${SAF_PREFIX}.het"
 
-# ============================================================
-# Step 1 — Generate per-individual SAF
-# Uses same parameters as population SAF runs:
-#   -GL 2 (GATK model)
-#   -minMapQ 10, -minQ 20
-#   -setMinDepthInd 1 (at least 1 read)
-#   -remove_bads 1, -trim 0
-#   random_10M_sites for unbiased genome-wide estimate
-# Note: no -minInd filter for single-individual runs
-# ============================================================
+if [[ -s "$HET_FILE" ]]; then
+    echo "Already done: $HET_FILE"
+    cat "$HET_FILE"
+    exit 0
+fi
+
+echo "=================================================================="
+echo "ANGSD SAF (all sites, all 13 placed chromosomes)"
+echo "=================================================================="
 angsd \
     -i "$BAM" \
     -ref "$REFERENCE" \
     -anc "$REFERENCE" \
+    -rf "$CHROM_FILE" \
     -GL 2 \
     -doSaf 1 \
     -doCounts 1 \
-    -minMapQ 10 \
+    -minMapQ 20 \
     -minQ 20 \
+    -baq 1 \
+    -C 50 \
+    -uniqueOnly 1 \
     -setMinDepthInd 1 \
+    -setMaxDepthInd 50 \
     -remove_bads 1 \
     -trim 0 \
     -P $THREADS \
     -nQueueSize 50 \
-    -sites "$SITES_FILE" \
-    -rf "$RF_FILE" \
-    -out "$SAF_PREFIX"
+    -out "$SAF_PREFIX" \
+    2> "${SAF_PREFIX}.angsd.log"
 
-# ============================================================
-# Step 2 — Estimate 1-sample folded SFS using realSFS
-# The folded SFS is appropriate when using reference as ancestral
-# For a diploid individual: SFS has 3 entries [n_hom_ref, n_het, n_hom_alt]
-# ============================================================
+[[ -s "${SAF_PREFIX}.saf.idx" ]] || { echo "ERROR: SAF not created for $SAMPLE_ID"; tail -30 "${SAF_PREFIX}.angsd.log"; exit 1; }
+
 realSFS \
     "${SAF_PREFIX}.saf.idx" \
     -fold 1 \
     -P $THREADS \
-    > "$SFS_FILE"
+    > "$SFS_FILE" \
+    2> "${SAF_PREFIX}.sfs.log"
 
-# ============================================================
-# Step 3 — Extract heterozygosity from SFS
-# SFS entries: [count_hom_ref, count_het, count_hom_alt]
-# Heterozygosity = count_het / (count_hom_ref + count_het + count_hom_alt)
-# This is the correct genome-wide per-site heterozygosity
-# ============================================================
-# Extract heterozygosity from SFS using awk (no Python needed)
+[[ -s "$SFS_FILE" ]] || { echo "ERROR: realSFS produced no output for $SAMPLE_ID"; cat "${SAF_PREFIX}.sfs.log"; exit 1; }
+
+# Extract heterozygosity: het / (hom_ref + het + hom_alt)
 awk -v sample="$SAMPLE_ID" -v out="$HET_FILE" '
 BEGIN { print "sample_id\theterozygosity\thom_ref_prop\thom_alt_prop\t" \
               "n_hom_ref\tn_het\tn_hom_alt\tn_sites_total" > out }
@@ -108,4 +111,4 @@ BEGIN { print "sample_id\theterozygosity\thom_ref_prop\thom_alt_prop\t" \
     }
 }' "$SFS_FILE"
 
-echo "Complete: $SAMPLE_ID — het=$(cut -f2 $HET_FILE | tail -1)"
+echo "Complete: $SAMPLE_ID — het=$(cut -f2 "$HET_FILE" | tail -1)"

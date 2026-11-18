@@ -5,7 +5,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/p06b_ld_%A.log
 
-# Load environment BEFORE set -euo pipefail
+# Load environment BEFORE set -eu
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen || true
 
@@ -25,7 +25,7 @@ THREADS=${THREADS:-16}
 MAX_KB_DIST=${MAX_KB_DIST:-2000}
 MIN_LD=${MIN_LD:-0.5}
 SUBSAMPLE_SIZE=${SUBSAMPLE_SIZE:-100000}
-REFERENCE=${REFERENCE:-$PWD/genome/Plong_genome_flye.fasta}
+REFERENCE=${REFERENCE:?ERROR: export REFERENCE (assembly the BAMs were mapped to)}
 BEAGLE="$OUT_DIR/all_samples.beagle.gz"
 MAFS="$OUT_DIR/all_samples.mafs.gz"
 
@@ -36,12 +36,21 @@ MAFS="$OUT_DIR/all_samples.mafs.gz"
 N_IND=$(zcat "$BEAGLE" | head -1 | awk '{print (NF-3)/3}')
 
 # Subsample sites
+# FIX: the old sort used `-t '_' -k1,1 -k2,2n -k3,3n`, but markers look like
+# chr1_RagTag_pilon_100012300 (pos is the LAST underscore field, not field 2/3),
+# so rows came out in LEXICOGRAPHIC order and ngsLD died with
+# "invalid distance between adjacent sites". We now build an explicit
+# chr <TAB> pos <TAB> line key, sort numerically on position, then strip the key.
+# This is also robust to unplaced contigs (contig_123_RagTag_pilon_456).
 (zcat "$BEAGLE" | head -1; \
  zcat "$BEAGLE" | tail -n +2 | \
  awk -v k=$SUBSAMPLE_SIZE 'BEGIN{srand(42)}
     { if (NR <= k) { lines[NR]=$0 } else { r=int(rand()*NR)+1; if(r<=k) lines[r]=$0 } }
     END{for(i=1;i<=k;i++) if(lines[i]!="") print lines[i]}' | \
- sort -t '_' -k1,1 -k2,2n -k3,3n) | gzip > "$OUT_DIR/all_samples.subsampled.beagle.gz"
+ awk 'BEGIN{OFS="\t"}{ n=split($1,a,"_"); pos=a[n]; chr=a[1];
+        for(i=2;i<n;i++) chr=chr "_" a[i];
+        print chr, pos, $0 }' | \
+ sort -k1,1 -k2,2n | cut -f3-) | gzip > "$OUT_DIR/all_samples.subsampled.beagle.gz"
 
 # Create position file
 zcat "$OUT_DIR/all_samples.subsampled.beagle.gz" | tail -n +2 | \
@@ -64,68 +73,48 @@ $NGSLD_PATH \
 [[ ${PIPESTATUS[0]} -ne 0 ]] && echo "ERROR: ngsLD failed" && exit 1
 
 # Prune SNPs
+# FIXES:
+#  - system python3 / Rscript+tidyverse are unusable here (GLIBC_2.28 missing,
+#    R not on PATH). Rewritten in awk: no external dependencies.
+#  - a stale Flye REFERENCE default silently produced a Flye-contig SNP list.
 tail -n +2 "$OUT_DIR/all_samples.ld" > "$OUT_DIR/all_samples.no_header.ld"
 
-python3 - "$OUT_DIR" "$((MAX_KB_DIST*1000))" "$MIN_LD" <<'PYEOF'
-import sys
-ld_file = sys.argv[1] + "/all_samples.no_header.ld"
-max_dist = int(sys.argv[2])
-min_r2 = float(sys.argv[3])
-output = sys.argv[1] + "/all_samples_unlinked.id"
+MAXD=$((MAX_KB_DIST*1000))
 
-ld_pairs=[]
-with open(ld_file) as f:
-    for line in f:
-        parts = line.strip().split()
-        if len(parts)<4: continue
-        pos1,pos2,dist,r2 = parts[0],parts[1],int(parts[2]),float(parts[3])
-        if abs(dist)<=max_dist and r2>=min_r2: ld_pairs.append((pos1,pos2,r2))
+awk -v maxd="$MAXD" -v minr2="$MIN_LD" '
+{
+    if (NF < 4) next
+    p1=$1; p2=$2; d=$3+0; r2=$4+0
+    if (d<0) d=-d
+    if (d<=maxd && r2>=minr2) { n++; A[n]=p1; B[n]=p2; R[n]=r2; conn[p1]++; conn[p2]++ }
+}
+END{
+    for(i=1;i<=n;i++) ord[i]=i
+    for(i=2;i<=n;i++){ v=ord[i]; j=i-1
+        while(j>=1 && R[ord[j]]<R[v]){ ord[j+1]=ord[j]; j-- }
+        ord[j+1]=v }
+    for(k=1;k<=n;k++){ i=ord[k]
+        if(A[i] in removed || B[i] in removed) continue
+        if(conn[A[i]]>=conn[B[i]]) removed[A[i]]=1; else removed[B[i]]=1 }
+    for(s in conn) if(!(s in removed)) print s
+}' "$OUT_DIR/all_samples.no_header.ld" | sort > "$OUT_DIR/all_samples_unlinked.id"
 
-site_connections={}
-for pos1,pos2,r2 in ld_pairs:
-    site_connections[pos1]=site_connections.get(pos1,0)+1
-    site_connections[pos2]=site_connections.get(pos2,0)+1
+[[ -s "$OUT_DIR/all_samples_unlinked.id" ]] || { echo "ERROR: LD pruning produced no sites"; exit 1; }
+echo "Unlinked sites retained: $(wc -l < "$OUT_DIR/all_samples_unlinked.id")"
 
-removed=set()
-for pos1,pos2,r2 in sorted(ld_pairs,key=lambda x:-x[2]):
-    if pos1 in removed or pos2 in removed: continue
-    if site_connections.get(pos1,0)>=site_connections.get(pos2,0):
-        removed.add(pos1)
-    else:
-        removed.add(pos2)
+# ANGSD sites file: chromo <TAB> pos <TAB> major <TAB> minor
+zcat "$MAFS" | tail -n +2 | awk -v ids="$OUT_DIR/all_samples_unlinked.id" '
+BEGIN{ while((getline line < ids) > 0) keep[line]=1 }
+{ if(($1":"$2) in keep) print $1"\t"$2"\t"$3"\t"$4 }' > "$OUT_DIR/LDpruned_snps.list"
 
-all_sites=set(site_connections.keys())
-unlinked=sorted(all_sites-removed)
+[[ -s "$OUT_DIR/LDpruned_snps.list" ]] || { echo "ERROR: LDpruned_snps.list empty"; exit 1; }
+echo "LD-pruned SNPs: $(wc -l < "$OUT_DIR/LDpruned_snps.list")"
 
-with open(output,'w') as out:
-    for site in unlinked: out.write(site+'\n')
-PYEOF
-
-[[ ! -f "$OUT_DIR/all_samples_unlinked.id" ]] && echo "ERROR: LD pruning failed" && exit 1
-
-# Create LD-pruned SNP list for ANGSD
-Rscript --vanilla - "$OUT_DIR" <<'REOF'
-library(tidyverse)
-args <- commandArgs(trailingOnly=TRUE)
-out_dir <- args[1]
-
-pruned_ids <- read_lines(file.path(out_dir,"all_samples_unlinked.id"))
-pruned_df <- tibble(id=pruned_ids) %>%
-  separate(id,into=c("chromo","position"),sep=":",convert=TRUE)
-
-mafs <- read_tsv(file.path(out_dir,"all_samples.mafs.gz"),
-                 col_types=cols(),show_col_types=FALSE) %>%
-  select(chromo,position,major,minor)
-
-pruned_sites <- mafs %>% inner_join(pruned_df,by=c("chromo","position"))
-write_tsv(pruned_sites,file.path(out_dir,"LDpruned_snps.list"),col_names=FALSE)
-REOF
-
-# Generate contig restriction file
+[[ -f "$REFERENCE.fai" ]] || { echo "ERROR: .fai not found: $REFERENCE.fai"; exit 1; }
 cut -f1 "$OUT_DIR/LDpruned_snps.list" | sort -u | \
     awk 'NR==FNR{order[$1]=NR; next} ($1 in order){print order[$1], $1}' \
     "$REFERENCE.fai" - | sort -k1,1n | cut -d' ' -f2 > "$OUT_DIR/LDpruned_contigs.txt"
-echo "✓ LDpruned_contigs.txt created ($(wc -l < "$OUT_DIR/LDpruned_contigs.txt") contigs)"
+echo "LDpruned_contigs.txt created ($(wc -l < "$OUT_DIR/LDpruned_contigs.txt") contigs)"
 
 echo "Indexing LD-pruned sites for ANGSD..."
 angsd sites index "$OUT_DIR/LDpruned_snps.list"

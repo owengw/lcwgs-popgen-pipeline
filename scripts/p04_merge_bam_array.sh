@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=24:00:00
-#SBATCH --array=1-198%20  # number of unique biological samples
+#SBATCH --array=1-198%50  # number of unique biological samples
 
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen

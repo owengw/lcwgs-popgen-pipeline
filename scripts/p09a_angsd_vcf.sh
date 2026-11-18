@@ -20,7 +20,7 @@ source ~/.bash_profile
 module load ANGSD/0.940-GCC-12.2.0 2>/dev/null || \
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 
-set -euo pipefail
+set -eu
 set -x
 
 # =============================================================================

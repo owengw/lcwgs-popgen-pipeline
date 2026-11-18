@@ -28,7 +28,7 @@ source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 module load R/4.4.1-foss-2022b 2>/dev/null || true
 
-set -euo pipefail
+set -eu
 set -x
 
 # =============================================================================
@@ -60,13 +60,13 @@ fi
 # minInd thresholds per population (30% of n)
 # ALL: 198 individuals total, 30% = 59
 declare -A MIN_IND
-MIN_IND[CAI]=7
+MIN_IND[CAI]=6     # 30% of 21
 MIN_IND[COI]=1
-MIN_IND[NS]=16
-MIN_IND[SB]=6
-MIN_IND[SI]=28
+MIN_IND[NS]=12     # 30% of 41
+MIN_IND[SB]=5      # 30% of 16
+MIN_IND[SI]=25     # 30% of 83
 MIN_IND[SP]=1
-MIN_IND[ALL]=59
+MIN_IND[ALL]=50    # 30% of 168
 
 # BAM list paths — ALL uses a separate list outside pop_map_lists/
 declare -A BAM_LISTS

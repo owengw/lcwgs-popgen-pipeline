@@ -7,8 +7,11 @@
 
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
+# angsd lives in owenspopgen; pcangsd only runs from the glibc-safe py3.10 env,
+# so call its binary directly rather than switching envs (which loses angsd).
+PCANGSD_BIN=${PCANGSD_BIN:-/mnt/parscratch/users/bi4og/conda_envs/pcangsd310/bin/pcangsd}
 
-set -euo pipefail
+set -eu
 set -x
 
 BAM_LIST=${BAM_LIST}
@@ -38,7 +41,7 @@ angsd \
 
 echo "Running PCAngsd..."
 
-pcangsd.py \
--beagle "$OUT_PREFIX.beagle.gz" \
+"$PCANGSD_BIN" \
+--beagle "$OUT_PREFIX.beagle.gz" \
 -o "$OUT_PREFIX" \
--threads $THREADS
+--threads $THREADS

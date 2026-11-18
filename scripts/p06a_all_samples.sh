@@ -9,7 +9,7 @@
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 
-set -euo pipefail
+set -eu
 
 # Define binaries
 ANGSD_BIN=angsd
@@ -24,6 +24,8 @@ MIN_MAPQ=${MIN_MAPQ:-10}
 MIN_Q=${MIN_Q:-13}
 FOLD_SFS=${FOLD_SFS:-1}
 MIN_IND_RATIO=${MIN_IND_RATIO:-0.20}
+CHROM_FILE=${CHROM_FILE:-physalia/angsd_results/chromosomes.txt}
+RF_OPT=""; [[ -f "$CHROM_FILE" ]] && RF_OPT="-rf $CHROM_FILE"
 
 OUT_PREFIX="$OUT_DIR/all_samples"
 
@@ -66,12 +68,12 @@ fi
 echo ""
 echo "Running ANGSD (genome-wide, strict filters for LD estimation)..."
 
-if ! $ANGSD_BIN -bam "$BAM_LIST" -ref "$REFERENCE" $ANC_OPT \
+if ! $ANGSD_BIN -bam "$BAM_LIST" -ref "$REFERENCE" $RF_OPT $ANC_OPT \
     -GL 2 -doGlf 2 -doMajorMinor 1 -doMaf 1 -doCounts 1 \
     -minMapQ $MIN_MAPQ -minQ $MIN_Q -minInd $MIN_IND \
     -SNP_pval 1e-10 \
     -minMaf 0.05 \
-    -setMinDepthInd 1 -nQueueSize 50 -P $THREADS \
+    -setMinDepthInd 1 -setMaxDepthInd 50 -nQueueSize 50 -P $THREADS \
     -out "$OUT_PREFIX" 2>&1 | tee "$OUT_PREFIX.angsd.log"; then
     echo "ERROR: ANGSD failed"
     tail -50 "$OUT_PREFIX.angsd.log"

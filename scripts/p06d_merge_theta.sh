@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=p06d_merge_theta
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/p06d_merge_theta_%A.log
@@ -9,22 +9,35 @@
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 
-set -euo pipefail
+set -eu
 set -x
 
 # Variables with defaults
 BAM_LIST=${BAM_LIST:-}
-REFERENCE=${REFERENCE:-$PWD/genome/Plong_genome_flye.fasta}
+REFERENCE=${REFERENCE:-$PWD/ncbi_submission/plongirostris.fasta}
+THREADS=${SLURM_CPUS_PER_TASK:-2}
 OUT_DIR=${OUT_DIR:-$PWD/physalia/angsd_results}
 ANCESTRAL=${ANCESTRAL:-}
 MIN_MAPQ=${MIN_MAPQ:-20}
 MIN_Q=${MIN_Q:-20}
 FOLD_SFS=${FOLD_SFS:-1}
 WINDOW_SIZE=${WINDOW_SIZE:-50000}
-WINDOW_STEP=${WINDOW_STEP:-10000}
+WINDOW_STEP=${WINDOW_STEP:-25000}
 
 PREFIX=$(basename "$BAM_LIST" .list)
 OUT_PREFIX="$OUT_DIR/$PREFIX"
+
+# -------------------------------
+# n<2 guard: theta / Tajima's D are undefined for single-sample populations.
+# Skip cleanly (exit 0) so the driver does not treat it as a failure.
+# -------------------------------
+if [[ -f "$BAM_LIST" ]]; then
+    N_IND=$(wc -l < "$BAM_LIST")
+    if (( N_IND < 2 )); then
+        echo "SKIP: $PREFIX has n=$N_IND (<2) — theta/Tajima's D undefined for single-sample populations."
+        exit 0
+    fi
+fi
 
 echo "Starting theta calculation for $PREFIX"
 
@@ -48,7 +61,7 @@ if [[ ! -f "$OUT_PREFIX.sfs" ]]; then
     echo "Estimating SFS..."
     if ! $REALSFS_BIN "$OUT_PREFIX.saf.idx" \
         -fold $FOLD_SFS \
-        -P 4 > "$OUT_PREFIX.sfs" 2> "$OUT_PREFIX.sfs.log"; then
+        -P $THREADS > "$OUT_PREFIX.sfs" 2> "$OUT_PREFIX.sfs.log"; then
         echo "ERROR: SFS estimation failed"
         cat "$OUT_PREFIX.sfs.log"
         exit 1
@@ -77,7 +90,7 @@ if [[ -n "$ANC_OPT" ]]; then
     if ! $REALSFS_BIN saf2theta "$OUT_PREFIX.saf.idx" \
         -sfs "$OUT_PREFIX.sfs" \
         -outname "$OUT_PREFIX" \
-        -P 4 \
+        -P $THREADS \
         $ANC_OPT > "$OUT_PREFIX.saf2theta.log" 2>&1; then
         echo "ERROR: Failed to calculate thetas with saf2theta"
         cat "$OUT_PREFIX.saf2theta.log"
@@ -87,7 +100,7 @@ else
     if ! $REALSFS_BIN saf2theta "$OUT_PREFIX.saf.idx" \
         -sfs "$OUT_PREFIX.sfs" \
         -outname "$OUT_PREFIX" \
-        -P 4 \
+        -P $THREADS \
         -fold $FOLD_SFS > "$OUT_PREFIX.saf2theta.log" 2>&1; then
         echo "ERROR: Failed to calculate thetas with saf2theta"
         cat "$OUT_PREFIX.saf2theta.log"

@@ -4,72 +4,47 @@
 #SBATCH --mem=24G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/p08a_rohan_individual_%A_%a.log
-#SBATCH --array=1-195
+#SBATCH --array=1-166%30
 
 # =============================================================================
-# ROHan per-individual ROH estimation
-# Runs on each individual BAM file using --tstv mode
+# p08a_rohan_individual.sh — RagTag rewrite.
+# Per-individual ROH estimation via ROHan, --tstv mode (fixed Ts/Tv ratio,
+# appropriate for non-model organisms / lcWGS — no mutation rate needed).
 #
-# --tstv [ratio]: uses a fixed Ts/Tv ratio (default 2.1) rather than requiring
-#                 a mutation rate — appropriate for non-model organisms and lcWGS
-# NOTE: --size in this ROHan version = window size in bp (default 1,000,000)
-#       NOT genome size — genome size is inferred from BAM headers automatically
-#       Do not pass genome size as --size
+# CHANGES FROM ORIGINAL:
+#  - array=1-180 (was 1-195), reads bam_list_dedup_overlapclipped.list
+#    directly — no EXCLUDE regex. Your final 180-sample list already
+#    correctly excludes SI43/SI45/SI35/SB4 and the 14 amplification
+#    replicates, while correctly KEEPING SI1T (unique animal, no original).
+#  - reference is the real RagTag plongirostris.fasta, not Flye.
 #
+# NOTE: --size in this ROHan version = window size in bp (default 1Mb),
+#       NOT genome size — genome size is inferred from the BAM header.
 # ROHan binary: /mnt/parscratch/users/bi4og/ROHan/bin/rohan
-# Requires modules: HTSlib/1.17-GCC-12.2.0 and GSL/2.7-GCC-12.2.0
-#
-# Array size: 195 (198 total - 3 excluded: SI43, SI45, SI83)
-# Verify with: grep -cEv "SI43|SI45|SI83" physalia/angsd_results/all_samples.list
-#
-# Excludes: SI43, SI45 (failed samples), SI83 (duplicate of SI77)
-# o-suffix and T-suffix samples retained — ROHan is per-individual so
-# results from duplicates can be verified against each other post-hoc
 # =============================================================================
 
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 module load HTSlib/1.17-GCC-12.2.0
 module load GSL/2.7-GCC-12.2.0
+set -eu
 
-set -euo pipefail
-
-# =============================================================================
-# Variables
-# =============================================================================
 ROHAN="/mnt/parscratch/users/bi4og/ROHan/bin/rohan"
 OUT_DIR=${OUT_DIR:-physalia/angsd_results}
-REFERENCE="genome/Plong_genome_flye.fasta"
-BAM_LIST="$OUT_DIR/all_samples.list"
+REFERENCE="/mnt/parscratch/users/bi4og/ncbi_submission/plongirostris.fasta"
+BAM_LIST="physalia/sample_lists/bam_list_dedup_overlapclipped.list"
 ROH_DIR="$OUT_DIR/roh/individual"
-THREADS=4
+THREADS=${SLURM_CPUS_PER_TASK:-4}
 
-EXCLUDE="SI43|SI45|SI83"
+mkdir -p "$ROH_DIR" logs
 
-mkdir -p "$ROH_DIR"
-mkdir -p logs
-
-# =============================================================================
-# Build filtered sample list (cached)
-# =============================================================================
-FILTERED_LIST="$ROH_DIR/rohan_sample.list"
-if [[ ! -f "$FILTERED_LIST" ]]; then
-    grep -vE "$EXCLUDE" "$BAM_LIST" > "$FILTERED_LIST"
-    echo "Filtered sample list created: $(wc -l < "$FILTERED_LIST") samples"
-fi
-
-TOTAL=$(wc -l < "$FILTERED_LIST")
-echo "Total samples: $TOTAL"
-
+TOTAL=$(wc -l < "$BAM_LIST")
 if [[ ${SLURM_ARRAY_TASK_ID} -gt $TOTAL ]]; then
     echo "Array task ${SLURM_ARRAY_TASK_ID} exceeds sample count $TOTAL — exiting"
     exit 0
 fi
 
-# =============================================================================
-# Get this array task's BAM file
-# =============================================================================
-BAM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$FILTERED_LIST")
+BAM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$BAM_LIST")
 SAMPLE=$(basename "$BAM" | sed 's/_merged.*//')
 
 echo "=================================================================="
@@ -78,24 +53,13 @@ echo "BAM: $BAM"
 echo "Array task: ${SLURM_ARRAY_TASK_ID} / $TOTAL"
 echo "=================================================================="
 
-if [[ -f "$ROH_DIR/${SAMPLE}.summary" ]]; then
-    echo "Output already exists, skipping: $ROH_DIR/${SAMPLE}.summary"
+if [[ -s "$ROH_DIR/${SAMPLE}.summary.txt" ]]; then
+    echo "Output already exists, skipping: $ROH_DIR/${SAMPLE}.summary.txt"
     exit 0
 fi
 
-if [[ ! -f "$BAM" ]]; then
-    echo "ERROR: BAM file not found: $BAM"
-    exit 1
-fi
+[[ -f "$BAM" ]] || { echo "ERROR: BAM file not found: $BAM"; exit 1; }
 
-# =============================================================================
-# Run ROHan
-# --tstv 2.1: Ts/Tv ratio (2.1 is standard default for vertebrates)
-# -t:         number of threads
-# -o:         output prefix
-# NOTE: --size is window size in bp, not genome size
-#       genome size inferred from BAM header automatically
-# =============================================================================
 "$ROHAN" \
     --tstv 2.1 \
     -t $THREADS \
@@ -104,11 +68,11 @@ fi
     "$BAM" \
     2> "$ROH_DIR/${SAMPLE}.log"
 
-if [[ -f "$ROH_DIR/${SAMPLE}.summary" ]]; then
+if [[ -s "$ROH_DIR/${SAMPLE}.summary.txt" ]]; then
     echo "Done: $SAMPLE"
-    cat "$ROH_DIR/${SAMPLE}.summary"
+    cat "$ROH_DIR/${SAMPLE}.summary.txt"
 else
     echo "ERROR: No summary file produced — check $ROH_DIR/${SAMPLE}.log"
-    tail -10 "$ROH_DIR/${SAMPLE}.log"
+    tail -20 "$ROH_DIR/${SAMPLE}.log"
     exit 1
 fi

@@ -1,122 +1,78 @@
 #!/bin/bash
 #SBATCH --job-name=sfs_analysis
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --time=00:20:00
 #SBATCH --output=logs/p07e_sfs_%j.log
 
-# Load environment
+# =============================================================================
+# p07e_sfs.sh — RagTag rewrite. Summarises singleton/doubleton proportions
+# from the genome-wide summed SFS files already produced by
+# p06d_theta_bychrom.sh --sfs-sum (pop_map_<POP>.sfs). No recomputation.
+# Populations: CAI, NS, SB, SI (the four with full all-sites theta chains).
+# Sample sizes read from pop_map_lists/, matching the current 180-sample set.
+# =============================================================================
+
 source ~/.bash_profile
-conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
+set -eu
 
-# Site Frequency Spectrum analysis and plotting
+OUT_DIR=${OUT_DIR:-physalia/angsd_results}
+POP_LIST_DIR="$OUT_DIR/pop_map_lists"
+SFS_OUT="$OUT_DIR/sfs"
+mkdir -p "$SFS_OUT" logs
 
-set -euo pipefail
+POPULATIONS=(CAI NS SB SI)
 
-# Required variables
-: ${OUT_DIR:?}
+SUMMARY="$SFS_OUT/sfs_summary.txt"
+echo "SFS Summary Statistics (all-sites, genome-wide)" > "$SUMMARY"
+echo "=================================================" >> "$SUMMARY"
+echo "" >> "$SUMMARY"
 
-echo "=================================================================="
-echo "Site Frequency Spectrum Analysis"
-echo "=================================================================="
-echo "Output directory: $OUT_DIR"
-echo "=================================================================="
+for POP in "${POPULATIONS[@]}"; do
+    SFS_FILE="$OUT_DIR/pop_map_${POP}.sfs"
+    LIST_FILE="$POP_LIST_DIR/pop_map_${POP}.list"
 
-mkdir -p ${OUT_DIR}/logs
-mkdir -p ${OUT_DIR}/sfs
-
-# Initialize summary file
-echo "SFS Summary Statistics" > ${OUT_DIR}/sfs/sfs_summary.txt
-echo "======================" >> ${OUT_DIR}/sfs/sfs_summary.txt
-echo "" >> ${OUT_DIR}/sfs/sfs_summary.txt
-
-# Find all SFS files
-echo "Processing SFS files for all populations..."
-
-for POP_NAME in pop_map_CAI pop_map_COI pop_map_DH pop_map_NS pop_map_SB pop_map_SI pop_map_SP \
-                CAI2023 CAI2024 COI2023 DH2023 NS2023 NS2024 SB2023 SB2024 SI2023 SI2024 SP2023 \
-                2023 2024 pop_map_ALL; do
-    
-    SFS_FILE="${OUT_DIR}/${POP_NAME}.sfs"
-    
-    if [[ ! -f "${SFS_FILE}" ]]; then
-        echo "WARNING: SFS file not found for ${POP_NAME}"
+    if [[ ! -s "$SFS_FILE" ]]; then
+        echo "WARNING: SFS file not found for $POP ($SFS_FILE)"
         continue
     fi
-    
-    echo "Processing ${POP_NAME}..."
-    
-    # Get sample size from the corresponding BAM list
-    N_IND=""
-    
-    # Try different list directories
-    for LIST_DIR in pop_map_lists site_year_map_lists year_map_lists; do
-        if [[ -f "${OUT_DIR}/${LIST_DIR}/${POP_NAME}.list" ]]; then
-            N_IND=$(wc -l < ${OUT_DIR}/${LIST_DIR}/${POP_NAME}.list)
-            break
-        fi
-    done
-    
-    # If still not found, try to infer from SFS file size
-    if [[ -z "$N_IND" ]]; then
-        echo "WARNING: Cannot find BAM list for ${POP_NAME}, attempting to infer from SFS"
-        # Count number of values in SFS file (should be 2*N + 1)
-        N_VALUES=$(cat ${SFS_FILE} | wc -w)
-        N_IND=$(( (N_VALUES - 1) / 2 ))
-        
-        if [[ $N_IND -le 0 ]]; then
-            echo "ERROR: Cannot determine sample size for ${POP_NAME}"
-            continue
-        fi
-        echo "  Inferred sample size: ${N_IND}"
-    fi
-    
-    echo "  Sample size: ${N_IND} individuals (${N_IND}*2 = $((N_IND*2)) chromosomes)"
-    
-    # Create normalized SFS (exclude first and last bins - invariant sites)
-    # SFS format: space-separated values for allele frequencies from 0 to 2N
-    cat ${SFS_FILE} | tr ' ' '\n' | awk 'NF>0 && NR>1 && NR<='$((N_IND*2))' {print}' > ${OUT_DIR}/sfs/${POP_NAME}_sfs_normalized.txt
-    
-    # Check if normalized file has content
-    if [[ ! -s ${OUT_DIR}/sfs/${POP_NAME}_sfs_normalized.txt ]]; then
-        echo "WARNING: No data in normalized SFS for ${POP_NAME}"
+    [[ -f "$LIST_FILE" ]] || { echo "WARNING: no BAM list for $POP"; continue; }
+
+    N_IND=$(wc -l < "$LIST_FILE")
+    echo "Processing $POP (n=$N_IND individuals, $((N_IND*2)) chromosomes)..."
+
+    # folded SFS: entries 1..N_IND (index 0 = invariant, excluded)
+    cat "$SFS_FILE" | tr ' ' '\n' | awk -v n="$N_IND" 'NF>0 && NR>1 && NR<=(n+1) {print}' \
+        > "$SFS_OUT/${POP}_sfs_normalized.txt"
+
+    if [[ ! -s "$SFS_OUT/${POP}_sfs_normalized.txt" ]]; then
+        echo "WARNING: no data in normalized SFS for $POP"
         continue
     fi
-    
-    # Calculate SFS statistics
-    awk -v pop="${POP_NAME}" -v n=$((N_IND*2)) 'BEGIN {
-        sum=0
-        singletons=0
-        doubletons=0
-    }
+
+    awk -v pop="$POP" -v n="$N_IND" 'BEGIN{sum=0; singletons=0; doubletons=0}
     NR==1 {singletons=$1}
     NR==2 {doubletons=$1}
     {sum+=$1}
     END {
         if (sum > 0) {
             print "Population:", pop
-            print "  Sample size:", n/2, "individuals"
-            print "  Total segregating sites:", sum
-            print "  Singletons:", singletons
-            print "  Doubletons:", doubletons
+            print "  Sample size (diploid, folded):", n, "individuals"
+            print "  Total segregating sites (sum of folded classes):", sum
+            print "  Singletons/lowest-freq class:", singletons
+            print "  Doubletons/next class:", doubletons
             print "  Singleton proportion:", singletons/sum
             print "  Doubleton proportion:", doubletons/sum
             print ""
         }
-    }' ${OUT_DIR}/sfs/${POP_NAME}_sfs_normalized.txt >> ${OUT_DIR}/sfs/sfs_summary.txt
-    
+    }' "$SFS_OUT/${POP}_sfs_normalized.txt" >> "$SUMMARY"
 done
 
 echo ""
 echo "=================================================================="
 echo "SFS Analysis Complete"
 echo "=================================================================="
+cat "$SUMMARY"
 echo ""
-echo "SFS summary:"
-cat ${OUT_DIR}/sfs/sfs_summary.txt
-echo ""
-echo "Individual SFS files in: ${OUT_DIR}/sfs/"
-echo "Summary: ${OUT_DIR}/sfs/sfs_summary.txt"
-echo "=================================================================="
+echo "Individual SFS files in: $SFS_OUT/"
+echo "Summary: $SUMMARY"

@@ -9,7 +9,7 @@
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 
-set -euo pipefail
+set -eu
 set -x
 
 OUT_DIR=${OUT_DIR:-physalia/angsd_results}

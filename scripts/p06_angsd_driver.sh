@@ -6,8 +6,12 @@
 #SBATCH --output=logs/angsd_driver_%A.log
 
 # Load environment
+# NOTE: sourcing ~/.bash_profile resets $@, wiping -o/-r/-b before getopts. Preserve/restore.
+_SAVED_ARGS=("$@")
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
+module load R/4.4.1-foss-2022b 2>/dev/null || true
+set -- "${_SAVED_ARGS[@]}"
 
 set -euo pipefail
 set -x
@@ -101,6 +105,7 @@ done
 if [[ -z "$OUT_DIR" ]] || [[ -z "$REFERENCE" ]] || [[ -z "$BAM_LIST" ]]; then
     echo "ERROR: Missing required arguments"
     helpFunction
+    exit 1
 fi
 
 echo "==================================================================="
@@ -134,7 +139,10 @@ echo "Total BAMs in list: $TOTAL_BAMS"
 # -------------------------------
 # Generate metadata and sample lists (if needed)
 # -------------------------------
-if [[ $RESUME_FROM -eq 0 ]]; then
+# Metadata + sample lists ALWAYS regenerate: they are cheap, and they must
+# match the -b BAM list. Gating them on RESUME_FROM meant a -R 2 resume ran
+# with stale (or missing) lists.
+if [[ 1 -eq 1 ]]; then
     echo ""
     echo "==================================================================="
     echo "Auto-generating metadata from BAM filenames"
@@ -143,66 +151,45 @@ if [[ $RESUME_FROM -eq 0 ]]; then
     METADATA_FILE="$OUT_DIR/metadata.tsv"
 
     Rscript --vanilla - "$BAM_LIST" "$OUT_DIR" <<'REOF'
-library(tidyverse)
 args <- commandArgs(trailingOnly = TRUE)
-bam_list_file <- args[1]
-out_dir <- args[2]
+bam_list_file <- args[1]; out_dir <- args[2]
 metadata_file <- file.path(out_dir, "metadata.tsv")
-
-bam_paths <- read_lines(bam_list_file)
-metadata <- tibble(bam_path = bam_paths) %>%
-  mutate(
-    filename = basename(bam_path),
-    prefix = str_extract(filename, "^[^_]+"),
-    number = as.integer(str_extract(prefix, "^\\d+")),
-    pop_part = str_extract(prefix, "(?<=-)\\w+"),
-    population = str_extract(pop_part, "^[A-Za-z]+") %>% str_remove("o$"),
-    site = population,
-    year = if_else(number >= 100, 2023, 2024),
-    sample_id = prefix
-  ) %>%
-  select(sample_id, bam_path, population, site, year) %>%
-  arrange(population, year, sample_id)
-
-cat("\nMetadata generation summary:\n")
-cat("Total samples:", nrow(metadata), "\n")
-write_tsv(metadata, metadata_file)
-cat("\nMetadata written to:", metadata_file, "\n")
+bam_paths <- readLines(bam_list_file); bam_paths <- bam_paths[nzchar(bam_paths)]
+filename <- basename(bam_paths)
+prefix   <- sub("_.*$", "", filename)
+number   <- as.integer(gsub("[^0-9].*$", "", prefix))
+pop_part <- sub("^[0-9]+o?-", "", prefix)
+population<- gsub("[^A-Za-z].*$", "", pop_part); population <- sub("o$","",population)
+year     <- ifelse(number >= 100, 2023L, 2024L)
+meta <- data.frame(sample_id=prefix, bam_path=bam_paths, population=population,
+                   site=population, year=year, stringsAsFactors=FALSE)
+keep <- !is.na(year) & nzchar(population)
+if (any(!keep)) cat("WARNING: dropping", sum(!keep), "unparseable sample(s)\n")
+meta <- meta[keep, , drop=FALSE]
+if (nrow(meta) == 0) stop("no samples parsed from BAM list - check filename convention")
+meta <- meta[order(meta$population, meta$year, meta$sample_id), ]
+cat("
+Total samples:", nrow(meta), "
+")
+write.table(meta, metadata_file, sep="	", quote=FALSE, row.names=FALSE)
 REOF
 
     echo "? Metadata generated"
 
     # Generate sample grouping lists
     Rscript --vanilla - "$OUT_DIR" <<'REOF'
-library(tidyverse)
-args <- commandArgs(trailingOnly = TRUE)
-out_dir <- args[1]
-metadata_file <- file.path(out_dir, "metadata.tsv")
-meta <- read_tsv(metadata_file, col_types = cols(), show_col_types = FALSE)
-
-dir.create(file.path(out_dir, "pop_map_lists"), showWarnings = FALSE, recursive = TRUE)
-dir.create(file.path(out_dir, "site_year_map_lists"), showWarnings = FALSE, recursive = TRUE)
-dir.create(file.path(out_dir, "year_map_lists"), showWarnings = FALSE, recursive = TRUE)
-
-# Pop maps
-pop_groups <- meta %>% group_by(population) %>% summarise(bams = list(bam_path), n = n(), .groups = "drop")
-for (i in seq_len(nrow(pop_groups))) {
-    writeLines(pop_groups$bams[[i]], file.path(out_dir, "pop_map_lists", paste0("pop_map_", pop_groups$population[i], ".list")))
-}
-writeLines(meta$bam_path, file.path(out_dir, "pop_map_lists", "pop_map_ALL.list"))
-
-# Site-year maps
-site_year_groups <- meta %>% mutate(site_year = paste0(site, year)) %>% group_by(site_year) %>% summarise(bams = list(bam_path), .groups = "drop")
-for (i in seq_len(nrow(site_year_groups))) {
-    writeLines(site_year_groups$bams[[i]], file.path(out_dir, "site_year_map_lists", paste0(site_year_groups$site_year[i], ".list")))
-}
-
-# Year maps
-year_groups <- meta %>% group_by(year) %>% summarise(bams = list(bam_path), .groups = "drop")
-for (i in seq_len(nrow(year_groups))) {
-    writeLines(year_groups$bams[[i]], file.path(out_dir, "year_map_lists", paste0(year_groups$year[i], ".list")))
-}
-cat("\n? All sample lists generated\n")
+args <- commandArgs(trailingOnly = TRUE); out_dir <- args[1]
+meta <- read.delim(file.path(out_dir,"metadata.tsv"), stringsAsFactors=FALSE)
+for (d in c("pop_map_lists","site_year_map_lists","year_map_lists"))
+    dir.create(file.path(out_dir,d), showWarnings=FALSE, recursive=TRUE)
+for (p in unique(meta$population))
+    writeLines(meta$bam_path[meta$population==p], file.path(out_dir,"pop_map_lists",paste0("pop_map_",p,".list")))
+writeLines(meta$bam_path, file.path(out_dir,"pop_map_lists","pop_map_ALL.list"))
+sy <- paste0(meta$site, meta$year)
+for (k in unique(sy)) writeLines(meta$bam_path[sy==k], file.path(out_dir,"site_year_map_lists",paste0(k,".list")))
+for (y in unique(meta$year)) writeLines(meta$bam_path[meta$year==y], file.path(out_dir,"year_map_lists",paste0(y,".list")))
+cat("All sample lists generated
+")
 REOF
 fi
 
@@ -224,14 +211,19 @@ if [[ $RESUME_FROM -le 0 ]]; then
 
     # Stratified LD subsample
     Rscript --vanilla - "$OUT_DIR" "$LD_SAMPLE_SIZE" <<'REOF'
-library(tidyverse)
 args <- commandArgs(trailingOnly=TRUE)
 out_dir <- args[1]; target_n <- as.integer(args[2])
-metadata <- read_tsv(file.path(out_dir,"metadata.tsv"), col_types=cols(), show_col_types=FALSE)
+meta <- read.delim(file.path(out_dir,"metadata.tsv"), stringsAsFactors=FALSE)
 set.seed(42)
-subsample <- metadata %>% group_by(population) %>% slice_sample(prop=min(1,target_n/nrow(metadata))) %>% ungroup() %>% slice_sample(n=min(target_n,nrow(.)))
-writeLines(subsample$bam_path,file.path(out_dir,"ld_subsample.list"))
-cat("LD subsample:",nrow(subsample),"samples from",n_distinct(subsample$population),"populations\n")
+# stratified: sample proportionally per population, then cap at target_n
+frac <- min(1, target_n/nrow(meta))
+idx <- unlist(lapply(split(seq_len(nrow(meta)), meta$population), function(ii){
+    k <- max(1, round(length(ii)*frac)); sample(ii, min(k, length(ii)))
+}))
+if (length(idx) > target_n) idx <- sample(idx, target_n)
+writeLines(meta$bam_path[idx], file.path(out_dir,"ld_subsample.list"))
+cat("LD subsample:", length(idx), "samples from", length(unique(meta$population[idx])), "populations
+")
 REOF
 
     LD_SAMPLE_COUNT=$(wc -l < "$LD_SUBSAMPLE_LIST")
@@ -240,7 +232,7 @@ REOF
     ALL_ANGSD_JOB=$(sbatch --parsable \
         --job-name="angsd_ld_sub" \
         --cpus-per-task=$THREADS \
-        --mem=64G \
+        --mem=128G \
         --time=24:00:00 \
         --export=ALL,BAM_LIST="$LD_SUBSAMPLE_LIST",REFERENCE="$REFERENCE",OUT_DIR="$OUT_DIR",ANCESTRAL="$ANCESTRAL",THREADS="$THREADS",MIN_MAPQ="$MIN_MAPQ",MIN_Q="$MIN_Q",FOLD_SFS="$FOLD_SFS",MIN_IND_RATIO="0.5" \
         scripts/p06a_all_samples.sh)
@@ -280,20 +272,26 @@ else
 fi
 
 # -------------------------------
-# Step 2: ANGSD SAF per grouping 
+# Step 2: ANGSD SAF per grouping  (ALL SITES, per-chromosome arrays)
 # -------------------------------
+# Each group is run as an array of one task per chromosome (p06c_saf_bychrom.sh),
+# then merged with `realSFS cat`. This caps memory at one chromosome instead of
+# the whole genome, so no -sites subsampling is needed and every site is used.
 if [[ $RESUME_FROM -le 2 ]]; then
     echo ""
     echo "==================================================================="
-    echo "STEP 2: Running ANGSD SAF per group (random subset of sites)"
+    echo "STEP 2: Running ANGSD SAF per group (ALL sites, per-chromosome)"
     echo "==================================================================="
-    echo "NOTE: SAF generation only - essential for theta/FST"
 
     declare -A ANGSD_JOBS
 
+    CHROM_FILE="${CHROM_FILE:-$OUT_DIR/chromosomes.txt}"
+    [[ -s "$CHROM_FILE" ]] || { echo "ERROR: chromosome list not found: $CHROM_FILE (run p00_preflight.sh)"; exit 1; }
+    NCHR=$(grep -c . "$CHROM_FILE")
+    echo "Chromosomes per group: $NCHR"
+
     for LIST_DIR in pop_map_lists site_year_map_lists year_map_lists; do
         [[ ! -d "$OUT_DIR/$LIST_DIR" ]] && continue
-
         echo ""
         echo "Processing $LIST_DIR:"
 
@@ -301,43 +299,54 @@ if [[ $RESUME_FROM -le 2 ]]; then
             [[ ! -f "$LIST_FILE" ]] && continue
 
             GROUP_NAME=$(basename "$LIST_FILE" .list)
-            N_SAMPLES=$(wc -l < "$LIST_FILE")
+            N_SAMPLES=$(grep -c . "$LIST_FILE")
 
-            # Memory scaling by sample size
-            if [[ $N_SAMPLES -ge 150 ]]; then
-                CPUS=8; MEM=256G; TIME=96:00:00
-            elif [[ $N_SAMPLES -ge 100 ]]; then
-                CPUS=8; MEM=256G; TIME=72:00:00
-            elif [[ $N_SAMPLES -ge 50 ]]; then
-                CPUS=6; MEM=128G; TIME=48:00:00
-            else
-                CPUS=$THREADS; MEM=64G; TIME=24:00:00
+            # n<2 guard: SAF/SFS undefined for a single sample
+            if [[ $N_SAMPLES -lt 2 ]]; then
+                echo "  $GROUP_NAME: SKIP (n=$N_SAMPLES < 2)"
+                continue
             fi
 
-            # Dependency logic
+            # memory is per-chromosome now, so it scales far more gently
+            if   [[ $N_SAMPLES -ge 100 ]]; then CPUS=4; MEM=96G;  TIME=48:00:00
+            elif [[ $N_SAMPLES -ge 50  ]]; then CPUS=4; MEM=64G;  TIME=36:00:00
+            else                                CPUS=4; MEM=48G;  TIME=24:00:00
+            fi
+
             if [[ -n "${LD_PRUNE_JOB:-}" ]]; then
                 DEP="--dependency=afterok:$LD_PRUNE_JOB"
             else
                 DEP=""
             fi
 
-            JOB_ID=$(sbatch --parsable \
+            # (a) per-chromosome array
+            ARRAY_JOB=$(sbatch --parsable \
                 $DEP \
+                --array=1-${NCHR}%${NCHR} \
                 --job-name="saf_${GROUP_NAME}" \
                 --cpus-per-task=$CPUS \
                 --mem=$MEM \
                 --time=$TIME \
-                --export=ALL,BAM_LIST="$LIST_FILE",REFERENCE="$REFERENCE",OUT_DIR="$OUT_DIR",ANCESTRAL="$ANCESTRAL",THREADS="$CPUS",MIN_MAPQ="$MIN_MAPQ",MIN_Q="$MIN_Q",FOLD_SFS="$FOLD_SFS",MIN_IND_RATIO="$MIN_IND_RATIO",USE_RANDOM_SITES=1 \
-                scripts/p06c_angsd_subset.sh)
+                --export=ALL,POP="$GROUP_NAME",BAM_LIST="$LIST_FILE",REFERENCE="$REFERENCE",OUT_DIR="$OUT_DIR",CHROM_FILE="$CHROM_FILE",MIN_MAPQ="$MIN_MAPQ",MIN_Q="$MIN_Q",MIN_IND_RATIO="$MIN_IND_RATIO" \
+                scripts/p06c_saf_bychrom.sh)
 
-            echo "  $GROUP_NAME ($N_SAMPLES samples): Job $JOB_ID | Mem=$MEM"
-            ANGSD_JOBS["$GROUP_NAME"]=$JOB_ID
+            # (b) merge, after ALL chromosomes of this group succeed
+            MERGE_JOB=$(sbatch --parsable \
+                --dependency=afterok:$ARRAY_JOB \
+                --job-name="safcat_${GROUP_NAME}" \
+                --cpus-per-task=2 --mem=16G --time=04:00:00 \
+                --output=logs/safcat_${GROUP_NAME}_%j.log \
+                --wrap="bash scripts/p06c_saf_bychrom.sh --merge POP=$GROUP_NAME OUT_DIR=$OUT_DIR")
+
+            echo "  $GROUP_NAME ($N_SAMPLES samples): array $ARRAY_JOB -> merge $MERGE_JOB | Mem=$MEM/chr"
+            # downstream steps must wait on the MERGE, not the array
+            ANGSD_JOBS["$GROUP_NAME"]=$MERGE_JOB
         done
     done
 
     NUM_GROUPS=${#ANGSD_JOBS[@]}
     echo ""
-    echo "Total SAF jobs submitted: $NUM_GROUPS (includes pop_map_ALL)"
+    echo "Total SAF group jobs submitted: $NUM_GROUPS"
 else
     echo "Skipping Step 2 (SAF generation)"
     declare -A ANGSD_JOBS
@@ -366,8 +375,8 @@ if [[ $RUN_PCA -eq 1 ]]; then
     PCA_JOB=$(sbatch --parsable \
         $PCA_DEP \
         --job-name="pca_ALL" \
-        --cpus-per-task=40 \
-        --mem=160G \
+        --cpus-per-task=4 \
+        --mem=96G \
         --time=96:00:00 \
         --export=ALL,BAM_LIST="$ALL_LIST",REFERENCE="$REFERENCE",OUT_DIR="$OUT_DIR",ANCESTRAL="$ANCESTRAL",THREADS=40,MIN_MAPQ="$MIN_MAPQ",MIN_Q="$MIN_Q",MIN_IND_RATIO="$MIN_IND_RATIO",USE_LD_PRUNED=1 \
         scripts/p06c2_pca.sh)
@@ -414,8 +423,8 @@ if [[ $RUN_PCA -eq 1 ]]; then
     PCANGSD_JOB=$(sbatch --parsable \
         $PCA_DEP \
         --job-name="pcangsd_ALL" \
-        --cpus-per-task=40 \
-        --mem=160G \
+        --cpus-per-task=4 \
+        --mem=96G \
         --time=96:00:00 \
         --export=ALL,BAM_LIST="$ALL_LIST",REFERENCE="$REFERENCE",OUT_DIR="$OUT_DIR",THREADS=40 \
         scripts/p06c3_pcangsd.sh)

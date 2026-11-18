@@ -36,7 +36,7 @@ module load Python/3.10.8-GCCcore-12.2.0
 module load R/4.4.1-foss-2022b 2>/dev/null || true
 export PYTHONPATH=/users/bi4og/.local/lib/python3.10/site-packages:$PYTHONPATH
 
-set -euo pipefail
+set -eu
 set -x
 
 # =============================================================================
@@ -275,7 +275,7 @@ for POP in "${POPULATIONS[@]}"; do
 
     # --- 3e: Run lcMLkin from output directory ---
     # Must cd to POP_OUT so os.path.basename() paths resolve correctly
-    RESULT_FILE="$POP_OUT/${POP}_lcmlkin.txt"
+    RESULT_FILE="$POP_OUT/${POP}_lcmlkin"
     if [[ -f "$RESULT_FILE" ]]; then
         N_PAIRS=$(wc -l < "$RESULT_FILE")
         echo "  lcMLkin results already exist ($N_PAIRS pairs) — skipping"
@@ -329,7 +329,7 @@ classify_relationship <- function(K0, r) {
 all_results <- list()
 for (pop in pop_order) {
     result_file <- file.path(lcmlkin_dir, pop,
-                             paste0(pop, "_lcmlkin.txt"))
+                             paste0(pop, "_lcmlkin"))
     if (!file.exists(result_file)) {
         cat("WARNING: No result file for", pop, "\n")
         next

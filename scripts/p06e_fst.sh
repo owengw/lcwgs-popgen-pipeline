@@ -13,7 +13,7 @@
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen
 
-set -euo pipefail
+set -eu
 
 OUT_DIR=${OUT_DIR:-$PWD/physalia/angsd_results}
 TEMPORAL_FST_THRESHOLD=${TEMPORAL_FST_THRESHOLD:-0.015}
@@ -155,9 +155,9 @@ for ((i=0; i<${#POPULATIONS[@]}; i++)); do
         LIST2="$OUT_DIR/pop_map_lists/${POPULATIONS[j]}.list"
         
         if [[ -f "$LIST1" && -f "$LIST2" ]]; then
-            ((TOTAL++))
+            TOTAL=$((TOTAL+1))
             if run_fst "$LIST1" "$LIST2" "population"; then
-                ((COMPLETED++))
+                COMPLETED=$((COMPLETED+1))
             fi
         fi
     done
@@ -174,9 +174,9 @@ for POP in "${POPS_WITH_YEARS[@]}"; do
     [[ ! -f "$LIST2" ]] && LIST2="$OUT_DIR/pop_map_lists/${POP}2024.list"
     
     if [[ -f "$LIST1" && -f "$LIST2" ]]; then
-        ((TOTAL++))
+        TOTAL=$((TOTAL+1))
         if run_fst "$LIST1" "$LIST2" "within-pop temporal"; then
-            ((COMPLETED++))
+            COMPLETED=$((COMPLETED+1))
         fi
     fi
 done
@@ -190,9 +190,9 @@ YEAR_2024="$OUT_DIR/year_map_lists/2024.list"
 [[ ! -f "$YEAR_2024" ]] && YEAR_2024="$OUT_DIR/pop_map_lists/2024.list"
 
 if [[ -f "$YEAR_2023" && -f "$YEAR_2024" ]]; then
-    ((TOTAL++))
+    TOTAL=$((TOTAL+1))
     if run_fst "$YEAR_2023" "$YEAR_2024" "global temporal"; then
-        ((COMPLETED++))
+        COMPLETED=$((COMPLETED+1))
     fi
 fi
 
@@ -217,9 +217,9 @@ if [[ "$SKIP_YEAR_COMPARISONS" == "false" ]]; then
             
             # Skip if same population
             if [[ "$POP1" != "$POP2" ]]; then
-                ((TOTAL++))
+                TOTAL=$((TOTAL+1))
                 if run_fst "$LIST1" "$LIST2" "between-pop×year"; then
-                    ((COMPLETED++))
+                    COMPLETED=$((COMPLETED+1))
                 fi
             fi
         done

@@ -9,7 +9,7 @@
 source ~/.bash_profile
 conda activate /mnt/parscratch/users/bi4og/conda_envs/owenspopgen || true
 
-set -euo pipefail
+set -eu
 set -x
 
 # Define binaries

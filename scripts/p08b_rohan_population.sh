@@ -19,7 +19,7 @@
 source ~/.bash_profile
 module load R/4.4.1-foss-2022b 2>/dev/null || true
 
-set -euo pipefail
+set -eu
 
 OUT_DIR=${OUT_DIR:-physalia/angsd_results}
 ROH_IND_DIR="$OUT_DIR/roh/individual"
@@ -63,7 +63,7 @@ summary_files <- list.files(ind_dir, pattern = "[.]summary[.]txt$", full.names =
 # ROHan .summary format varies slightly by version
 # Key fields: heterozygosity (theta), number of ROH, total ROH length, F_ROH
 parse_rohan_summary <- function(f) {
-    sample <- sub("\\.summary$", "", basename(f))
+    sample <- sub("\\.summary\\.txt$", "", basename(f))
     lines  <- tryCatch(readLines(f), error = function(e) NULL)
     if (is.null(lines) || length(lines) == 0) {
         cat("WARNING: Empty or unreadable summary:", f, "\n")
@@ -173,7 +173,6 @@ small_pops <- setdiff(all_pops, main_pops)
 if (length(small_pops) > 0) {
     cat("\nSmall populations (interpret with caution):\n")
     ind_small <- ind_df[!is.na(ind_df$site) & ind_df$site %in% small_pops, ]
-    print(ind_small[, c("sample_id", "site", "theta", "n_roh",
     print(ind_small[, c("sample_id", "site", "theta", "n_roh", "avg_roh_kb", "pct_roh")])
 }
 REOF
